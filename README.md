@@ -1,12 +1,12 @@
 # micronaut-camunda-bpm
-**Integration between Micronaut and Camunda BPM Process Engine**
+**Integration between Micronaut and Camunda BPM**
 
-This project allows you to easily integrate the [Camunda BPM Process Engine](https://camunda.com/products/bpmn-engine/) into existing [Micronaut](https://micronaut.io) projects.
+This project allows you to easily integrate [Camunda BPM](https://camunda.com/products/bpmn-engine/) into existing [Micronaut](https://micronaut.io) projects.
 
 We configure Camunda BPM with sensible defaults, so that you can get started with minimum configuration: simply add a dependency in your Micronaut project!
 
 Advantages of Micronaut together with Camunda BPM:
-* Monumental leap in startup time (Currently still blocked by [micronaut-core#2867](https://github.com/micronaut-projects/micronaut-core/issues/2867)) and MyBatis initialization.
+* Monumental leap in startup time (Currently blocked by slow MyBatis initialization)
 * Minimal memory footprint
 * (...)
 
@@ -25,14 +25,17 @@ Micronaut + Camunda BPM = :heart:
 [![Join the chat](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/NovatecConsulting/micronaut-camunda-bpm)
 
 # Features
-* Camunda BPM can be integrated into a Micronaut project by simply [adding a dependency](#add-dependency-using-gradle) in build.gradle (Gradle) or pom.xml (Maven).
-* Using h2 as an in-memory database is as simple as [adding a dependency](#add-dependency-using-gradle). Other [data sources can be configured](#data-source) via properties.
-* The Camunda process engine with its job executor is started automatically.
+* Camunda BPM can be integrated as an embedded process engine into a Micronaut project by simply [adding a dependency](#add-dependency-using-gradle) in build.gradle (Gradle) or pom.xml (Maven).
+* Using H2 as an in-memory database is as simple as [adding a dependency](#add-dependency-using-gradle). Other [data sources can be configured](#data-source) via properties.
 * Models (*.bpmn, *.cmmn, and *.dmn) found in the root of the resources are [automatically deployed](#deploying-process-models).
+* The Camunda process engine with its job executor is started automatically.
 * The process engine and related services, e.g. RuntimeService, RepositoryService, ..., are provided as lazy initialized beans and [can be injected](#calling-camunda-bpm-process-engine-and-related-services).
 * Micronaut beans are resolved from the application context if they are [referenced by expressions or Java class names](#invoking-java-delegates) within the process models.
-* The [process engine configuration](#custom-process-engine-configuration) and the [job executor configuration](#custom-jobexecutor-configuration) can be customized programmatically.
 * The process engine [integrates with Micronaut's transaction manager](#using-micronaut-data-jdbc-or-micronaut-data-jpa). Optionally, micronaut-data-jdbc or micronaut-data-jpa are supported.
+* The process engine can be configured with [generic properties](#generic-properties).
+* The [process engine configuration](#custom-process-engine-configuration) and the [job executor configuration](#custom-jobexecutor-configuration) can be customized programmatically.
+* A Camunda admin user is created if configured by [properties](#properties) and not present yet (including admin group and authorizations).
+* Camunda BPM's telemetry feature is automatically deactivated during test execution 
 
 # Getting Started
 
@@ -46,7 +49,7 @@ Do you need an example? See our example application at [/micronaut-camunda-bpm-e
 1. (Optionally) create an empty Micronaut project with `mn create-app my-example` or use [Micronaut Launch](https://launch.micronaut.io).
 2. Add the dependency in build.gradle:
 ```groovy
-implementation("info.novatec:micronaut-camunda-bpm-feature:0.10.0")
+implementation("info.novatec:micronaut-camunda-bpm-feature:0.13.0")
 runtimeOnly("com.h2database:h2")
 ```
 
@@ -59,7 +62,7 @@ Note: The module `micronaut-camunda-bpm-feature` includes the dependency `org.ca
 <dependency>
   <groupId>info.novatec</groupId>
   <artifactId>micronaut-camunda-bpm-feature</artifactId>
-  <version>0.10.0</version>
+  <version>0.13.0</version>
 </dependency>
 <dependency>
   <groupId>com.h2database</groupId>
@@ -82,6 +85,8 @@ Inject the process engine or any related services using constructor injection:
 // ...
 
 import javax.inject.Singleton;
+import org.camunda.bpm.engine.ProcessEngine;
+import org.camunda.bpm.engine.RuntimeService;
 
 @Singleton
 public class MyComponent {
@@ -105,6 +110,10 @@ Alternatively to constructor injection, you can also use field injection, JavaBe
 To invoke a Java Delegate first create a singleton bean:
 
 ```java
+import javax.inject.Singleton;
+import org.camunda.bpm.engine.delegate.DelegateExecution;
+import org.camunda.bpm.engine.delegate.JavaDelegate;
+
 @Singleton
 public class LoggerDelegate implements JavaDelegate {
 
@@ -119,7 +128,51 @@ public class LoggerDelegate implements JavaDelegate {
 
 and then reference it the process model with the expression`${loggerDelegate}`.
 
-## Executing Blocking Operations on I/O Thread Pool 
+## Process Tests
+
+Process tests can easily be implemented with JUnit 5 by adding the `camunda-bpm-assert` library as a dependency:
+
+```groovy
+testImplementation("org.camunda.bpm.assert:camunda-bpm-assert:8.0.0")
+testImplementation("org.assertj:assertj-core:3.16.1")
+```
+
+and then implement the test using the usual `@MicronautTest` annotation:
+
+```java
+import io.micronaut.test.extensions.junit5.annotation.MicronautTest;
+import org.camunda.bpm.engine.RuntimeService;
+import org.camunda.bpm.engine.runtime.ProcessInstance;
+import org.junit.jupiter.api.Test;
+
+import javax.inject.Inject;
+
+import static org.camunda.bpm.engine.test.assertions.bpmn.BpmnAwareTests.*;
+
+@MicronautTest
+class HelloWorldProcessTest {
+
+    @Inject
+    RuntimeService runtimeService;
+
+    @Test
+    void happyPath() {
+        ProcessInstance processInstance = runtimeService.startProcessInstanceByKey("HelloWorld");
+        assertThat(processInstance).isStarted();
+
+        assertThat(processInstance).isWaitingAt("TimerEvent_Wait");
+        execute(job());
+
+        assertThat(processInstance).isEnded();
+    }
+}
+```
+
+Note: the integration will automatically disable the process engine's telemetry feature during test execution. This is triggered by the "test" profile.
+
+See also a test in our example application: [HelloWorldProcessTest](/micronaut-camunda-bpm-example/src/test/java/info/novatec/micronaut/camunda/bpm/example/HelloWorldProcessTest.java)
+
+## Executing Blocking Operations on Netty's I/O Thread Pool 
 When using the default server implementation Netty, blocking operations must be performed on I/O instead of Netty threads to avoid possible deadlocks. Therefore, as soon as Camunda ["borrows a client thread"](https://docs.camunda.org/manual/current/user-guide/process-engine/transactions-in-processes/)  you have to make sure that the [event loop is not blocked](https://objectcomputing.com/resources/publications/sett/june-2020-micronaut-2-dont-let-event-loops-own-you).
 A frequently occurring example is the implementation of a REST endpoint which interacts with the process engine. By default, Micronaut would use a Netty thread for this blocking operation. To prevent the use of a Netty thread it is recommended to use the annotation [`@ExecuteOn(TaskExecutors.IO)`](https://docs.micronaut.io/latest/guide/index.html#reactiveServer). This will make sure that an I/O thread is used.
 
@@ -158,28 +211,54 @@ runtimeOnly "org.postgresql:postgresql:42.2.18"
 
 You may use the following properties (typically in application.yml) to configure the Camunda BPM integration.
 
-| Prefix               |Property          | Default                                      | Description            |
-|----------------------|------------------|----------------------------------------------|------------------------|
-| camunda.bpm          | .history-level   | auto                                         | Camunda history level, use one of [`full`, `audit`, `activity`, `none`, `auto`]. `auto` uses the level already present in the database, defaulting to `full`. |
-| camunda.bpm.database | .schema-update   | true                                         | If automatic schema update should be applied, use one of [`true`, `false`, `create`, `create-drop`, `drop-create`] |
-| camunda.bpm.telemetry| .telemetryReporterActivate | true                               | Enable to report anonymized data about the installation to Camunda |
-| camunda.bpm.telemetry| .initializeTelemetry       | false                              | Enable to report anonymized data about the process engine usage to Camunda |
+| Prefix                |Property          | Default                                      | Description            |
+|-----------------------|------------------|----------------------------------------------|------------------------|
+| camunda.bpm.admin-user| .id             |                                               | If present, a Camunda admin account will be created by this id (including admin group and authorizations) |
+| camunda.bpm.admin-user| .password       |                                               | Admin's password (mandatory if the id is present)  |
+| camunda.bpm.admin-user| .firstname      |                                               | Admin's firstname (mandatory if the id is present) |
+| camunda.bpm.admin-user| .lastname       |                                               | Admin's lastname (mandatory if the id is present) |
+| camunda.bpm.admin-user| .email          |                                               | Admin's email address (optional) |
+
+## Generic Properties
+
+The process engine can be configured using generic properties listed in Camunda's Documentation: [Configuration Properties](https://docs.camunda.org/manual/latest/reference/deployment-descriptors/tags/process-engine/#configuration-properties).
+
+The properties can be set in kebab case (lowercase and hyphen separated) or camel case (indicating the separation of words with a single capitalized letter as written in Camunda's documentation). Kebab case is preferred when setting properties.
+
+Some of the most relevant properties are:
+* database-schema-update (databaseSchemaUpdate)
+* history
+* initialize-telemetry (initializeTelemetry)
+* telemetry-reporter-activate (telemetryReporterActivate)
+
+Example:
+
+```yaml
+camunda:
+  bpm:
+    generic-properties:
+      properties:
+        initialize-telemetry: true
+```
 
 ### Custom Process Engine Configuration
-
-Internally, to build Camunda `ProcessEngine` we use `ProcessEngineConfiguration`. This process can be intercepted for detailed configuration customization with the following bean:
+With the following bean it's possible to customize the process engine configuration:
 
 ```java
+import info.novatec.micronaut.camunda.bpm.feature.DefaultProcessEngineConfigurationCustomizer;
+import info.novatec.micronaut.camunda.bpm.feature.MnProcessEngineConfiguration;
+import info.novatec.micronaut.camunda.bpm.feature.ProcessEngineConfigurationCustomizer;
+import io.micronaut.context.annotation.Replaces;
+import javax.inject.Singleton;
+
 @Singleton
 @Replaces(DefaultProcessEngineConfigurationCustomizer.class)
-public class MyProcessEngineConfigurationCustomizer implements ProcessEngineConfigurationCustomizer  {
-
+public class MyProcessEngineConfigurationCustomizer implements ProcessEngineConfigurationCustomizer {
     @Override
-    public void customize(ProcessEngineConfiguration configuration) {
-        // configure ProcessEngineConfiguration here, e.g.:
-        configuration.setProcessEngineName("CustomizedEngine");
+    public void customize(MnProcessEngineConfiguration processEngineConfiguration) {
+        // configure process engine configuration here, e.g.:
+        processEngineConfiguration.setProcessEngineName("CustomizedEngine");
     }
-
 }
 ```
 
@@ -187,12 +266,17 @@ public class MyProcessEngineConfigurationCustomizer implements ProcessEngineConf
 With the following bean it's possible to customize the job executor:
 
 ```java
+import info.novatec.micronaut.camunda.bpm.feature.DefaultJobExecutorCustomizer;
+import info.novatec.micronaut.camunda.bpm.feature.JobExecutorCustomizer;
+import info.novatec.micronaut.camunda.bpm.feature.MnJobExecutor;
+import io.micronaut.context.annotation.Replaces;
+import javax.inject.Singleton;
+
 @Singleton
 @Replaces(DefaultJobExecutorCustomizer.class)
-public class CustomizedJobExecutor implements JobExecutorCustomizer {
-
+public class MyJobExecutorCustomizer implements JobExecutorCustomizer {
     @Override
-    public void customize(@Nonnull JobExecutor jobExecutor) {
+    public void customize(MnJobExecutor jobExecutor) {
         jobExecutor.setWaitTimeInMillis(300);
     }
 }
@@ -285,6 +369,10 @@ Other combinations might also work but have not been tested.
 
 | Release |Micronaut | Camunda BPM |
 |--------|-------|--------|
+| 0.13.0 | 2.2.2 | 7.14.0 |
+| 0.12.0 | 2.2.1 | 7.14.0 |
+| 0.11.0 | 2.2.1 | 7.14.0 |
+| 0.10.1 | 2.2.0 | 7.14.0 |
 | 0.10.0 | 2.2.0 | 7.14.0 |
 | 0.9.0 | 2.1.3 | 7.14.0 |
 | 0.8.0 | 2.1.2 | 7.13.0 |

@@ -9,9 +9,7 @@ on:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
     steps:
       - name: Git Checkout
         uses: actions/checkout@v2
@@ -34,7 +32,7 @@ jobs:
           RELEASE_VERSION=$(echo "${GITHUB_REF}" | cut -d "/" -f3 | sed 's/v//')
           echo "New release version: ${RELEASE_VERSION}"
           ./gradlew -Pversion=${RELEASE_VERSION} build --warning-mode=fail
-          ./gradlew -Pversion=${RELEASE_VERSION} -Psigning.password=${SIGNING_PWD} publish --info
+          ./gradlew -Pversion=${RELEASE_VERSION} -Psigning.password=${SIGNING_PWD} publish --info -Dorg.gradle.internal.http.socketTimeout=180000 -Dorg.gradle.internal.http.connectionTimeout=180000
         env:
           OSSRH_PWD: ${{ secrets.OSSRH_PWD }}
           SIGNING_PWD: ${{ secrets.SIGNING_PWD }}

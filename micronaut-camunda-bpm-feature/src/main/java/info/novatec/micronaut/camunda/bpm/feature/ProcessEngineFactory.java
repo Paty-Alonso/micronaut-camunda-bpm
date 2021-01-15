@@ -27,12 +27,15 @@ public class ProcessEngineFactory {
      * The {@link ProcessEngine} is started with the application start so that the task scheduler is started immediately.
      *
      * @param processEngineConfiguration the {@link ProcessEngineConfiguration} to build the {@link ProcessEngine}.
+     * @param camundaBpmVersion the @{@link CamundaBpmVersion} to log on application start.
      * @return the initialized {@link ProcessEngine} in the application context.
      * @throws IOException if a resource, i.e. a model, cannot be loaded.
      */
     @Context
     @Bean(preDestroy = "close")
-    public ProcessEngine processEngine(ProcessEngineConfiguration processEngineConfiguration) throws IOException {
+    public ProcessEngine processEngine(ProcessEngineConfiguration processEngineConfiguration, CamundaBpmVersion camundaBpmVersion) throws IOException {
+
+        log.info("Camunda BPM version: {}", camundaBpmVersion.getVersion());
 
         ProcessEngine processEngine = processEngineConfiguration.buildProcessEngine();
 
@@ -49,7 +52,7 @@ public class ProcessEngineFactory {
      * @param processEngine the {@link ProcessEngine}
      * @throws IOException if a resource, i.e. a model, cannot be loaded.
      */
-    private void deployProcessModels(ProcessEngine processEngine) throws IOException {
+    protected void deployProcessModels(ProcessEngine processEngine) throws IOException {
         log.info("Searching non-recursively for models in the resources");
         PathMatchingResourcePatternResolver resourceLoader = new PathMatchingResourcePatternResolver();
         // Order of extensions has been chosen as a best fit for inter process dependencies.

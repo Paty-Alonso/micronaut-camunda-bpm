@@ -3,18 +3,15 @@ package info.novatec.micronaut.camunda.bpm.feature;
 import info.novatec.micronaut.camunda.bpm.feature.tx.MnTransactionContextFactory;
 import info.novatec.micronaut.camunda.bpm.feature.tx.MnTransactionInterceptor;
 import io.micronaut.context.ApplicationContext;
+import io.micronaut.context.env.Environment;
+import io.micronaut.core.annotation.Introspected;
+import io.micronaut.core.beans.BeanIntrospection;
+import io.micronaut.core.beans.BeanProperty;
 import io.micronaut.transaction.SynchronousTransactionManager;
-import org.camunda.bpm.engine.ArtifactFactory;
 import org.camunda.bpm.engine.ProcessEngine;
-import org.camunda.bpm.engine.impl.cfg.StandaloneProcessEngineConfiguration;
-import org.camunda.bpm.engine.impl.history.HistoryLevel;
-import org.camunda.bpm.engine.impl.interceptor.CommandContextInterceptor;
-import org.camunda.bpm.engine.impl.interceptor.CommandInterceptor;
-import org.camunda.bpm.engine.impl.interceptor.LogInterceptor;
-import org.camunda.bpm.engine.impl.interceptor.ProcessApplicationContextInterceptor;
-import org.camunda.bpm.engine.impl.jobexecutor.DefaultJobExecutor;
-import org.camunda.bpm.engine.impl.jobexecutor.JobExecutor;
-import org.camunda.bpm.engine.impl.telemetry.TelemetryRegistry;
+import org.camunda.bpm.engine.ProcessEngineConfiguration;
+import org.camunda.bpm.engine.impl.cfg.ProcessEngineConfigurationImpl;
+import org.camunda.bpm.engine.impl.interceptor.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,6 +21,7 @@ import java.sql.Connection;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 
 import static io.micronaut.transaction.TransactionDefinition.Propagation.REQUIRED;
 import static io.micronaut.transaction.TransactionDefinition.Propagation.REQUIRES_NEW;
@@ -37,26 +35,45 @@ import static io.micronaut.transaction.TransactionDefinition.Propagation.REQUIRE
  * @author Lukasz Frankowski
  */
 @Singleton
-public class MnProcessEngineConfiguration extends StandaloneProcessEngineConfiguration {
+@Introspected
+public class MnProcessEngineConfiguration extends ProcessEngineConfigurationImpl {
 
     private static final Logger log = LoggerFactory.getLogger(MnProcessEngineConfiguration.class);
 
     protected final SynchronousTransactionManager<Connection> transactionManager;
 
-    protected final JobExecutorCustomizer jobExecutorCustomizer;
+    protected final MnJobExecutor jobExecutor;
 
-    public MnProcessEngineConfiguration(Configuration configuration, ApplicationContext applicationContext, DataSource dataSource, SynchronousTransactionManager<Connection> transactionManager, ProcessEngineConfigurationCustomizer processEngineConfigurationCustomizer, ArtifactFactory artifactFactory, JobExecutorCustomizer jobExecutorCustomizer, TelemetryRegistry telemetryRegistry) {
+    protected final Configuration configuration;
+
+    protected final MnTelemetryRegistry telemetryRegistry;
+
+    protected final Environment environment;
+
+    public MnProcessEngineConfiguration(SynchronousTransactionManager<Connection> transactionManager,
+                                        MnJobExecutor jobExecutor,
+                                        Configuration configuration,
+                                        MnTelemetryRegistry telemetryRegistry,
+                                        Environment environment,
+                                        ApplicationContext applicationContext,
+                                        DataSource dataSource,
+                                        MnArtifactFactory artifactFactory,
+                                        ProcessEngineConfigurationCustomizer processEngineConfigurationCustomizer) {
         this.transactionManager = transactionManager;
-        this.jobExecutorCustomizer = jobExecutorCustomizer;
+        this.jobExecutor = jobExecutor;
+        this.configuration = configuration;
+        this.telemetryRegistry = telemetryRegistry;
+        this.environment = environment;
         setDataSource(dataSource);
         setTransactionsExternallyManaged(true);
-        setDatabaseSchemaUpdate(configuration.getDatabase().getSchemaUpdate());
-        setHistory(configuration.getHistoryLevel());
-        setJobExecutorActivate(true);
         setExpressionManager(new MnExpressionManager(new ApplicationContextElResolver(applicationContext)));
         setArtifactFactory(artifactFactory);
 
-        configureTelemetry(configuration, telemetryRegistry);
+        configureDefaultValues();
+
+        applyGenericProperties(configuration);
+
+        configureTelemetry();
 
         processEngineConfigurationCustomizer.customize(this);
     }
@@ -72,12 +89,6 @@ public class MnProcessEngineConfiguration extends StandaloneProcessEngineConfigu
     }
 
     @Override
-    public HistoryLevel getDefaultHistoryLevel() {
-        // Define default history level for history level "auto".
-        return HistoryLevel.HISTORY_LEVEL_FULL;
-    }
-
-    @Override
     protected void initTransactionContextFactory() {
         if(transactionContextFactory == null) {
             transactionContextFactory = new MnTransactionContextFactory(transactionManager);
@@ -85,9 +96,7 @@ public class MnProcessEngineConfiguration extends StandaloneProcessEngineConfigu
     }
 
     @Override
-    protected void initJobExecutor(){
-        JobExecutor jobExecutor = new DefaultJobExecutor();
-        jobExecutorCustomizer.customize(jobExecutor);
+    protected void initJobExecutor() {
         setJobExecutor(jobExecutor);
         super.initJobExecutor();
     }
@@ -102,20 +111,67 @@ public class MnProcessEngineConfiguration extends StandaloneProcessEngineConfigu
         return getCommandInterceptors(true);
     }
 
-    private List<CommandInterceptor> getCommandInterceptors(boolean requiresNew) {
+    protected List<CommandInterceptor> getCommandInterceptors(boolean requiresNew) {
         return Arrays.asList(
                 new LogInterceptor(),
+                new CommandCounterInterceptor(this),
                 new ProcessApplicationContextInterceptor(this),
                 new MnTransactionInterceptor(transactionManager, requiresNew ? REQUIRES_NEW : REQUIRED),
                 new CommandContextInterceptor(commandContextFactory, this, requiresNew)
         );
     }
 
-    private void configureTelemetry(Configuration configuration, TelemetryRegistry telemetryRegistry) {
-        setTelemetryReporterActivate(configuration.getTelemetry().isTelemetryReporterActivate());
-        if (configuration.getTelemetry().isInitializeTelemetry()) {
-            setInitializeTelemetry(true);
-        }
+    /**
+     * Configure telemetry registry and always disable if the "test" profile is active, i.e. tests are being executed.
+     */
+    protected void configureTelemetry() {
         setTelemetryRegistry(telemetryRegistry);
+        if (environment.getActiveNames().contains(Environment.TEST)) {
+            setInitializeTelemetry(false);
+            setTelemetryReporterActivate(false);
+        }
+    }
+
+    /**
+     * Configure sensible defaults so that the user must not take care of it.
+     */
+    protected void configureDefaultValues() {
+        setJobExecutorActivate(true);
+        setDatabaseSchemaUpdate(ProcessEngineConfiguration.DB_SCHEMA_UPDATE_TRUE);
+    }
+
+    protected void applyGenericProperties(Configuration configuration) {
+        BeanIntrospection<MnProcessEngineConfiguration> introspection = BeanIntrospection.getIntrospection(MnProcessEngineConfiguration.class);
+
+        for(Map.Entry<String, Object > entry : configuration.getGenericProperties().getProperties().entrySet()){
+            BeanProperty<MnProcessEngineConfiguration, Object> property = introspection.getProperty(entry.getKey())
+                    .orElseThrow(() -> new RuntimeException("Invalid engine property: " + entry.getKey()));
+
+            property.set(this, resolveGenericPropertyValue(entry.getValue(), property.getType()));
+        }
+    }
+
+    protected Object resolveGenericPropertyValue(Object value, Class type) {
+        // Even if the value is not of type String we cannot assume that it is of the correct type,
+        // e.g. a value of "30" will have the type "int" and can then not be set as a value if the
+        // configuration is of type "long".
+        // Therefore we always use the string value for primitive types and convert it to the target type.
+        if (type == int.class) {
+            return Integer.valueOf(String.valueOf(value));
+        } else if (type == long.class) {
+            return Long.valueOf(String.valueOf(value));
+        } else if (type == boolean.class) {
+            return Boolean.valueOf(String.valueOf(value));
+        } else if (type == String.class) {
+            return String.valueOf(value);
+        } else {
+            return value;
+        }
+    }
+
+    public ProcessEngineConfigurationImpl setInitializeTelemetry(Boolean telemetryInitialized) {
+        // This method makes the Boolean telemetryInitialized a writable property.
+        // Otherwise applyGenericProperties cannot set the property.
+        return super.setInitializeTelemetry(telemetryInitialized);
     }
 }

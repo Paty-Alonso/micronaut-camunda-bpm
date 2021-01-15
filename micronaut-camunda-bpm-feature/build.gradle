@@ -1,6 +1,9 @@
 plugins {
     id("io.micronaut.library")
     id("java-library")
+    id("org.jetbrains.kotlin.jvm")
+    id("org.jetbrains.kotlin.kapt")
+    id("org.jetbrains.kotlin.plugin.allopen")
     id("maven-publish")
     id("signing")
 }
@@ -21,18 +24,30 @@ dependencies {
     implementation("io.micronaut:micronaut-runtime")
     api("org.camunda.bpm:camunda-engine:$camundaVersion")
 
+    kaptTest platform("io.micronaut:micronaut-bom:$micronautVersion")
+    kaptTest("io.micronaut.data:micronaut-data-processor")
+    kapt("io.micronaut:micronaut-inject-java:$micronautVersion")
+
     // Integration of Transaction Management
     api("io.micronaut.data:micronaut-data-tx")
     api("io.micronaut.sql:micronaut-jdbc-hikari")
 
     // Test
-    testImplementation("org.mockito:mockito-core:3.5.13")
+    testImplementation("org.mockito:mockito-core:3.7.0")
     testRuntimeOnly("com.h2database:h2")
 }
 
 java {
     sourceCompatibility = JavaVersion.toVersion('1.8')
     targetCompatibility = JavaVersion.toVersion('1.8')
+}
+
+tasks {
+    compileTestKotlin {
+        kotlinOptions {
+            jvmTarget = "1.8"
+        }
+    }
 }
 
 java {
@@ -89,13 +104,4 @@ signing {
 
 configurations {
     testArtifacts
-}
-
-task testJar(type: Jar) {
-    classifier "test"
-    from sourceSets.test.output
-}
-
-artifacts {
-    testArtifacts testJar
 }
